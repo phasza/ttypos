@@ -11,22 +11,33 @@
 #include <linux/tty_driver.h>
 #include <linux/tty_flip.h>
 #include <linux/kref.h>
+#if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,18))
 #include <linux/uaccess.h>
+#endif
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+#include <linux/types.h>
+#endif
 #include <linux/usb.h>
 #include <linux/mutex.h>
 #include <linux/time.h>
 #include <linux/sched.h>
-#ifdef LINUX_VERSION_CODE
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,13,0))
+
 #include <linux/err.h>
 #include <linux/kthread.h>
-#endif
-#endif
+
 #define USB_VENDOR_ID		0x1234
 #define USB_PRODUCT_ID		0x0101
 
+#define USB_NEW_VENDOR_ID		0x2FB8
+#define PROLIN_PRODUCT_ID		0x1101
+#define PROLIN_DOUBLE_PRODUCT_ID		0x110B
+#define MONITOR_PRODUCT_ID		0x0101
+
 static struct usb_device_id pos_usb_table[] = {
 	{ USB_DEVICE(USB_VENDOR_ID, USB_PRODUCT_ID) },
+	{ USB_DEVICE(USB_NEW_VENDOR_ID, PROLIN_PRODUCT_ID) },
+	{ USB_DEVICE(USB_NEW_VENDOR_ID, MONITOR_PRODUCT_ID) 	},
+	{ USB_DEVICE(USB_NEW_VENDOR_ID, PROLIN_DOUBLE_PRODUCT_ID) 	},
 	{},
 };
 
@@ -37,20 +48,32 @@ MODULE_DEVICE_TABLE(usb,pos_usb_table);
 
 #define THREAD_INIT		0x00
 #define THREAD_STOPPED		0x01
-#define THREAD_CREATED		0x82
-#define THREAD_CLOSE		0x83
+#define THREAD_RUNNING		0x82
+//#define THREAD_CLOSE		0x83
+//#define THREAD_QUERY_WAIT	0x84
+//#define THREAD_WAIT			0x85
 
 #define THREAD_IS_RUNNING(ThreadState)	(ThreadState & 0x80)
 
 #define WRITE_COMMAND		0	/* write to usb device command */
 #define READ_COMMAND		1	/* read from to usb device command */
 #define STATUS_COMMAND		2	/* get device buffer status command */
+#define RESET_COMMAND       3
+#define MAXDATA_COMMAND     4
 
+#if 0
 #define POOL_SIZE		10241
+#define MAX_DATA        508
+#else
+#define POOL_SIZE		(120*1024+1)
+#define MAX_DATA        65532
+#endif
+
+//#define MAX_TRANSFER_SIZE 512
 
 typedef struct _POOL {
-	unsigned int ReadPos;
-	unsigned int WritePos;
+	volatile unsigned int ReadPos;
+	volatile unsigned int WritePos;
 	unsigned char Buffer[POOL_SIZE];
 } __attribute__((packed)) POOL, *PPOOL;
 
@@ -58,25 +81,26 @@ typedef struct {
 	unsigned char SeqNo;
 	unsigned char ReqType;		/* 0:OUT, 1:IN, 2:STAT, 3:RESET */
 	unsigned short Len;
-	unsigned char Data[508];
+	unsigned char Data[MAX_DATA];
 } __attribute__((packed)) ST_BULK_IO;
 
 typedef struct {
-	unsigned int TxBufSize;
-	unsigned int RxBufSize;
-	unsigned int TxLeft;
-	unsigned int RxLeft;
+	volatile unsigned int TxBufSize;
+	volatile unsigned int RxBufSize;
+	volatile unsigned int TxLeft;
+	volatile unsigned int RxLeft;
 } __attribute__((packed)) ST_BIO_STATE;
 
 struct tty_pos {
 	struct tty_struct *tty;
 	unsigned char devIndex;
+    atomic_t rc_busy;
+    atomic_t discon;
+    atomic_t openCnt;
 
 	/* for tiocmget and tiocmset functions */
 	int msr;		/* MSR shadow */
 	int mcr;		/* MCR shadow */
-
-	struct file *filp;
 
 	struct usb_device *udev;
 	struct usb_interface *interface;
@@ -95,13 +119,14 @@ struct tty_pos {
 	struct kref kref;
 	struct mutex io_mutex;		/* synchronize I/O with disconnect */
 	volatile u8 ThreadState;
-	struct completion ThreadExit_completion;
 
 	unsigned char SeqCount;
 	ST_BULK_IO *BioPack;		/* for IO access */
 	ST_BIO_STATE BioDevState;
 
-	POOL TxPool;
+	volatile POOL TxPool;
+    unsigned short maxdata;
+	unsigned short max_transfer_size;
 };
 
 #define to_pos_dev(d)		container_of(d, struct tty_pos, kref)
@@ -120,18 +145,7 @@ struct tty_pos {
 #define INFO(stuff...)
 #else
 #define ERR(stuff...)		printk(KERN_ERR "ttyPos: " stuff)
-#define INFO(stuff...)		printk(KERN_INFO "ttyPos: " stuff)
+#define INFO(stuff...)		printk(KERN_ALERT "ttyPos: " stuff)
 #endif
 
-//--error code define of API call
-#define USB_ERR_NOT_OPEN        (-3403)//通道未打开
-#define USB_ERR_BUF             (-3404)//发送缓冲区错误
-#define USB_ERR_NOT_FREE        (-3405)//无可用的端口
-#define USB_ERR_NO_CONF         (-3411)//设备未完成枚举和配置过程
-#define USB_ERR_DISCONN         (-3412)//设备已经与主机断开
-#define USB_ERR_MEM_SYSTEM      (-3413)//系统内存出现异常
-#define USB_ERR_BUSY            (-3414)//USB系统忙碌
-#define USB_ERR_RC_SYSTEM       (-3415)//系统资源申请失败
-#define USB_ERR_DEV_ABSENT      (-3416)//USB主机上设备不在位
-#define USB_ERR_INVALID         (-3417)//USB通讯状态无效
 #endif

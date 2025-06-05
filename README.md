@@ -1,8 +1,6 @@
-ttyPos driver for PAX bank pinpads
-===
+# ttyPos driver for PAX bank pinpads
 
-This version 3.03 modified to run on modern kernels
-
+Fork of alex-eri/ttypos to patch if for Linux kernel >6.1
 
 To build localy
 
